@@ -10,7 +10,7 @@ Mostra no Discord o chat do Foundry em tempo real e manda ao bot **O Curador** o
 No Foundry (ou na Forge), instale pelo link do manifesto:
 
 ```
-https://github.com/Yamavaki/Nauren-Modulo-Foundry-Discord/releases/latest/download/module.json
+https://raw.githubusercontent.com/Yamavaki/Nauren-Modulo-Foundry-Discord/main/module.json
 ```
 
 Depois, em cada mundo: ative o módulo, abra Configurações → Configurar opções → **Nauren no Discord** → **Configurar**, cole o código que o Curador gera com `/foundry conectar` e clique em **Salvar** e **Testar**. É uma vez por mundo.
@@ -18,7 +18,6 @@ Depois, em cada mundo: ative o módulo, abra Configurações → Configurar opç
 > O código fica salvo no mundo, embaralhado mas não criptografado. Se vazar, gere outro com `/foundry conectar novo:True`.
 
 ## Publicar uma versão nova
-1. Mude `version` (e o número no fim de `download`) no `module.json`.
-2. Faça o commit no `main`.
-3. No GitHub, **Releases → Draft a new release**, crie a tag com o mesmo número (por exemplo `v1.2.0`) e publique.
-4. A Action anexa o zip e o `module.json` à release; o Foundry passa a oferecer a atualização.
+1. Mude `version` no `module.json`.
+2. Gere o zip: `zip -r dist/nauren-discord.zip module.json scripts` (apague o antigo antes).
+3. Faça o commit no `main`. O Foundry compara a versão do manifesto e oferece a atualização.
