@@ -1,0 +1,25 @@
+# Ao criar uma tag v1.2.3, monta o zip do módulo e publica uma release no GitHub.
+# O Foundry/Forge instala e atualiza pelo link do manifesto:
+#   https://github.com/Yamavaki/Nauren-Modulo-Foundry-Discord/releases/latest/download/module.json
+name: Release do módulo
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Conferir versão da tag com o module.json
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER=$(jq -r .version module.json)
+          if [ "$TAG" != "$VER" ]; then echo "A tag ($TAG) não bate com a versão do module.json ($VER)"; exit 1; fi
+      - name: Montar o zip
+        run: zip -r nauren-discord.zip module.json scripts
+      - name: Publicar a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" nauren-discord.zip module.json --title "Nauren no Discord $GITHUB_REF_NAME" --notes "Instale pelo manifesto: https://github.com/${{ github.repository }}/releases/latest/download/module.json"
