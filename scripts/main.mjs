@@ -1,5 +1,5 @@
 // ============================================================
-// Nauren no Discord 1.3.0
+// Nauren no Discord 1.3.1
 // • Chat em tempo real: cada mensagem ou cartão do Foundry vira UMA
 //   mensagem no Discord, com o nome e o retrato de quem falou. Dos
 //   cartões da Nauren vai só o que importa (dados, dano, cura, alvos,
@@ -11,7 +11,7 @@
 // o de um jogador). O código é colado uma vez por mundo e fica salvo nele.
 // ============================================================
 const ID = "nauren-discord";
-const VERSAO = "1.3.0";
+const VERSAO = "1.3.1";
 const INTERVALO_SINAL = 120_000;
 const ESPACO_ENVIO = 450;          // o Discord aceita ~5 mensagens a cada 2 s por webhook
 const APAGAR_ATE = 15 * 60_000;    // apagar no Discord só mensagens recentes (não espelha "limpar o chat")
@@ -184,11 +184,18 @@ function urlPublica(caminho) {
 }
 
 function quemFalou(msg) {
-  const actor = ChatMessage.getSpeakerActor?.(msg.speaker) ?? (msg.speaker?.actor ? game.actors.get(msg.speaker.actor) : null);
+  // Quem falou: pelo speaker; se o card só trouxe o nome (ex.: Criador de Personagem),
+  // pelo ator que o sistema guardou no card, ou pelo nome do ator no mundo.
+  const porUuid = u => { try { return u ? globalThis.fromUuidSync?.(u) : null; } catch { return null; } };
+  const nauren = msg.flags?.nauren ?? {};
+  let actor = ChatMessage.getSpeakerActor?.(msg.speaker) ?? (msg.speaker?.actor ? game.actors.get(msg.speaker.actor) : null);
+  if (!actor) actor = porUuid(nauren.casterUuid) ?? porUuid(nauren.registroRolagem?.actorUuid) ?? (msg.alias ? game.actors.getName?.(msg.alias) : null) ?? null;
+  if (actor && actor.documentName !== "Actor") actor = actor.actor ?? null;   // uuid de token → ator
   const autor = msg.author ?? msg.user;
   let nome = msg.alias || actor?.name || autor?.name || "Foundry";
   let img = actor?.img;
-  if (!img || /mystery-man/.test(img)) {
+  if (!img || /mystery-man|\.svg(\?|$)/i.test(img)) {
+    img = actor?.prototypeToken?.texture?.src || img;
     const tok = msg.speaker?.token && game.scenes.get(msg.speaker.scene)?.tokens.get(msg.speaker.token);
     img = tok?.texture?.src || img;
   }
