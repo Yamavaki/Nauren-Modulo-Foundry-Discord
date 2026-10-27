@@ -1,16 +1,17 @@
 // ============================================================
-// Nauren no Discord 1.2.0
+// Nauren no Discord 1.3.0
 // • Chat em tempo real: cada mensagem ou cartão do Foundry vira UMA
 //   mensagem no Discord, com o nome e o retrato de quem falou. Dos
 //   cartões da Nauren vai só o que importa (dados, dano, cura, alvos,
 //   efeitos, Prioridade) — as descrições ficam no Foundry.
-// • Sinal de vida: de 2 em 2 minutos o Foundry avisa O Curador que o
-//   mundo está aberto, quem está conectado, a cena e o combate.
+// • Tudo vai para o TÓPICO do mundo no fórum da staff (criado sozinho).
+//   A 1ª mensagem do tópico é o sinal de vida, editada de 2 em 2 minutos,
+//   que O Curador lê para montar o painel de mundos online.
 // Quem manda é SÓ um navegador por vez (o do Mestre principal; sem Mestre,
 // o de um jogador). O código é colado uma vez por mundo e fica salvo nele.
 // ============================================================
 const ID = "nauren-discord";
-const VERSAO = "1.2.0";
+const VERSAO = "1.3.0";
 const INTERVALO_SINAL = 120_000;
 const ESPACO_ENVIO = 450;          // o Discord aceita ~5 mensagens a cada 2 s por webhook
 const APAGAR_ATE = 15 * 60_000;    // apagar no Discord só mensagens recentes (não espelha "limpar o chat")
@@ -20,22 +21,22 @@ const esperar = ms => new Promise(r => setTimeout(r, ms));
 const cortar = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
 
 // ------------------------------------------------------------
-// Código de conexão (gerado pelo Curador com /foundry conectar)
+// Código de conexão (gerado pelo Curador com /foundry)
 // ------------------------------------------------------------
 const ehWebhook = u => /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/\d+\/[\w-]+(?:\?.*)?$/.test(String(u ?? "").trim());
 
 export function lerCodigo(codigo) {
   const bruto = String(codigo ?? "").trim();
-  if (!bruto.startsWith("NDC1.")) throw new Error("Esse não é um código do Curador (ele começa com NDC1.).");
+  if (bruto.startsWith("NDC1.")) throw new Error("Esse código é da versão antiga. No Discord, use /foundry para gerar o código novo.");
+  if (!bruto.startsWith("NDC2.")) throw new Error("Esse não é um código do Curador (ele começa com NDC2.).");
   let dados;
   try {
     const b64 = bruto.slice(5).replace(/-/g, "+").replace(/_/g, "/");
     const bin = atob(b64 + "===".slice((b64.length + 3) % 4));
     dados = JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0))));
   } catch { throw new Error("O código está incompleto. Copie de novo a mensagem inteira do Curador."); }
-  if (dados.c && !ehWebhook(dados.c)) throw new Error("O link do chat dentro do código não é válido.");
-  if (dados.s && !ehWebhook(dados.s)) throw new Error("O link do sinal dentro do código não é válido.");
-  return { chat: dados.c || "", sinal: dados.s || "", servidor: dados.g || "" };
+  if (!ehWebhook(dados.w)) throw new Error("O link dentro do código não é válido. Gere outro com /foundry.");
+  return { webhook: dados.w, tag: dados.t || "", servidor: dados.g || "" };
 }
 
 // ------------------------------------------------------------
@@ -63,8 +64,9 @@ class Fila {
     this.rodando = false;
   }
 }
-const filaChat = new Fila();
-const filaSinal = new Fila();
+// Uma fila só: chat, sinal e provas usam o mesmo webhook (o mesmo limite do Discord)
+const fila = new Fila();
+const filaChat = fila, filaSinal = fila;
 
 async function chamar(metodo, url, corpo) {
   for (let tentativa = 0; tentativa < 5; tentativa++) {
@@ -90,10 +92,10 @@ async function chamar(metodo, url, corpo) {
 }
 
 // ------------------------------------------------------------
-// Onde ficam os links: no próprio MUNDO (configura uma vez e vale para
-// qualquer Mestre, em qualquer computador). Ficam embaralhados para não
+// Onde fica o código: no próprio MUNDO (configura uma vez e vale para
+// qualquer Mestre, em qualquer computador). Fica embaralhado para não
 // aparecer em texto puro, mas isso NÃO é criptografia: quem souber usar o
-// console (F12) consegue ler. Se vazar, /foundry conectar novo:True.
+// console (F12) consegue ler. Se vazar, /foundry novo:True no Discord.
 // ------------------------------------------------------------
 const embaralhar = (texto, chave) => {
   const k = new TextEncoder().encode(chave || "nauren");
@@ -106,22 +108,57 @@ const desembaralhar = (texto, chave) => {
   return new TextDecoder().decode(b.map((x, i) => x ^ k[i % k.length]));
 };
 function links() {
-  try {
-    const bruto = cfg("links");
-    if (bruto) return JSON.parse(desembaralhar(bruto, game.world?.id)) ?? {};
-  } catch { /* configuração corrompida: trata como vazia */ }
-  // 1.0.0 guardava no navegador: ainda vale até o Mestre salvar de novo
-  try { return JSON.parse(localStorage.getItem(`${ID}.links.${game.world?.id ?? "?"}`) || "{}") ?? {}; } catch { return {}; }
+  try { const bruto = cfg("links"); if (bruto) return JSON.parse(desembaralhar(bruto, game.world?.id)) ?? {}; }
+  catch { /* configuração corrompida: trata como vazia */ }
+  return {};
 }
 async function salvarLinks(l) {
-  const vazio = !l.chat && !l.sinal;
-  await game.settings.set(ID, "links", vazio ? "" : embaralhar(JSON.stringify({ chat: l.chat || "", sinal: l.sinal || "" }), game.world?.id));
-  try { localStorage.removeItem(`${ID}.links.${game.world?.id ?? "?"}`); } catch { /* sem armazenamento: tudo bem */ }
+  const antes = links().webhook || "";
+  await game.settings.set(ID, "links", l.webhook ? embaralhar(JSON.stringify({ webhook: l.webhook, tag: l.tag || "" }), game.world?.id) : "");
+  if ((l.webhook || "") !== antes) {                       // código novo: o tópico é criado de novo
+    await game.settings.set(ID, "topicoId", "");
+    await game.settings.set(ID, "sinalMensagemId", "");
+  }
 }
-const urlChat = () => links().chat || "";
-const urlSinal = () => links().sinal || "";
-const temChat = () => ehWebhook(urlChat());
-const temSinal = () => ehWebhook(urlSinal());
+const temWebhook = () => ehWebhook(links().webhook);
+const temChat = temWebhook, temSinal = temWebhook;
+
+// ------------------------------------------------------------
+// Tópico do mundo no fórum da staff: criado na 1ª vez (só pelo Mestre,
+// porque o id fica salvo no mundo). A 1ª mensagem do tópico é o sinal.
+// ------------------------------------------------------------
+const urlTopico = (extra, params, topico) => montarUrl(links().webhook, extra, { ...params, thread_id: topico });
+const topicoSumiu = err => err?.status === 404 && /10003|Unknown Channel/i.test(err.message);
+async function esquecerTopico() {
+  if (!game.user.isGM) return;
+  await game.settings.set(ID, "topicoId", "");
+  await game.settings.set(ID, "sinalMensagemId", "");
+}
+async function garantirTopico() {          // sempre chamado de dentro da fila (nunca cria dois)
+  const id = cfg("topicoId");
+  if (id) return id;
+  if (!game.user.isGM) return null;
+  const corpo = { username: "Foundry", allowed_mentions: { parse: [] }, thread_name: cortar(game.world.title || "Mundo", 100), content: textoDoSinal(dadosDoSinal("online")) };
+  if (links().tag) corpo.applied_tags = [links().tag];
+  const r = await chamar("POST", montarUrl(links().webhook, "", { wait: "true" }), corpo);
+  if (!r?.channel_id) return null;
+  await game.settings.set(ID, "topicoId", r.channel_id);
+  await game.settings.set(ID, "sinalMensagemId", r.id);
+  return r.channel_id;
+}
+// Manda no tópico do mundo; se o tópico foi apagado no Discord, o Mestre cria outro
+async function noTopico(metodo, extra, corpo, params = {}) {
+  for (let tentativa = 0; tentativa < 2; tentativa++) {
+    const topico = await garantirTopico();
+    if (!topico) return null;
+    try { return await chamar(metodo, urlTopico(extra, params, topico), corpo); }
+    catch (err) {
+      if (tentativa === 0 && topicoSumiu(err) && game.user.isGM) { await esquecerTopico(); continue; }
+      throw err;
+    }
+  }
+  return null;
+}
 
 // Quem manda: o Mestre principal. Sem Mestre na sala, um dos jogadores
 // conectados (o de menor id), para o mundo aparecer online e o chat seguir.
@@ -319,14 +356,13 @@ const postados = new Map();   // id da mensagem no Foundry → { promessa do id 
 const pendentes = new Set();  // cartões "aguardando reação": vão quando virarem o cartão final
 
 function postar(msg, corpo) {
-  const base = urlChat();
-  const promessa = filaChat.add(() => chamar("POST", montarUrl(base, "", { wait: "true" }), corpo)).then(r => r?.id ?? null);
+  const promessa = fila.add(() => noTopico("POST", "", corpo, { wait: "true" })).then(r => r?.id ?? null);
   postados.set(msg.id, { promessa, quando: Date.now() });
   if (postados.size > 400) postados.delete(postados.keys().next().value);
   promessa.catch(err => avisarFalha(err));
 }
 
-// Rolagem de atributos no Criador (Nauren 0.94.19+): a prova vai ao canal do sinal,
+// Rolagem de atributos no Criador (Nauren 0.94.19+): a prova vai ao tópico do mundo,
 // onde O Curador guarda e depois confere com a ficha exportada. Vai mesmo se o
 // card for sussurro ou se o chat estiver desligado.
 function enviarProvaDeRolagem(msg) {
@@ -347,7 +383,7 @@ function enviarProvaDeRolagem(msg) {
   };
   const corpo = { username: "Foundry — Sinal", allowed_mentions: { parse: [] },
     content: `🎲 Rolagem registrada — lida pelo Curador, não apague.\n\`\`\`json\n${JSON.stringify(dados)}\n\`\`\`` };
-  filaSinal.add(() => chamar("POST", montarUrl(urlSinal(), "", { wait: "true" }), corpo)).catch(err => avisarFalha(err));
+  fila.add(() => noTopico("POST", "", corpo, { wait: "true" })).catch(err => avisarFalha(err));
 }
 
 function aoCriar(msg) {
@@ -370,7 +406,7 @@ async function aoAtualizar(msg, mudancas) {
   const idDiscord = await registro.promessa.catch(() => null);
   if (!idDiscord) return;
   const { username, avatar_url, ...edicao } = corpo; // na edição o Discord não troca nome nem retrato
-  filaChat.add(() => chamar("PATCH", montarUrl(urlChat(), `/messages/${idDiscord}`), edicao)).catch(err => avisarFalha(err));
+  fila.add(() => noTopico("PATCH", `/messages/${idDiscord}`, edicao)).catch(err => avisarFalha(err));
 }
 
 async function aoApagar(msg) {
@@ -380,7 +416,7 @@ async function aoApagar(msg) {
   postados.delete(msg.id);
   if (Date.now() - registro.quando > APAGAR_ATE || filaChat.tamanho > 15) return;
   const idDiscord = await registro.promessa.catch(() => null);
-  if (idDiscord) filaChat.add(() => chamar("DELETE", montarUrl(urlChat(), `/messages/${idDiscord}`))).catch(() => {});
+  if (idDiscord) fila.add(() => noTopico("DELETE", `/messages/${idDiscord}`)).catch(() => {});
 }
 
 // ------------------------------------------------------------
@@ -409,16 +445,21 @@ const textoDoSinal = dados => `🛰️ Sinal do Foundry — lido pelo Curador, n
 
 async function enviarSinal(estado = "online") {
   if (!souEmissor() || !temSinal()) return;
-  const base = urlSinal();
-  const corpo = { content: textoDoSinal(dadosDoSinal(estado)), allowed_mentions: { parse: [] }, username: "Foundry — Sinal" };
-  const id = cfg("sinalMensagemId");
-  return filaSinal.add(async () => {
+  return fila.add(async () => {
+    const jaTinha = !!cfg("topicoId");
+    let topico = await garantirTopico();         // se criou agora, o sinal já foi a 1ª mensagem
+    if (!topico || !jaTinha) return;
+    const conteudo = { content: textoDoSinal(dadosDoSinal(estado)), allowed_mentions: { parse: [] } };
+    const id = cfg("sinalMensagemId");
     if (id) {
-      try { await chamar("PATCH", montarUrl(base, `/messages/${id}`), { content: corpo.content, allowed_mentions: corpo.allowed_mentions }); return; }
-      catch (err) { if (err.status !== 404) throw err; }      // apagaram a mensagem: cria outra
+      try { await chamar("PATCH", urlTopico(`/messages/${id}`, {}, topico), conteudo); return; }
+      catch (err) {
+        if (topicoSumiu(err) && game.user.isGM) { await esquecerTopico(); await garantirTopico(); return; }
+        if (err.status !== 404) throw err;         // apagaram só a mensagem do sinal: cria outra no tópico
+      }
     }
-    if (!game.user.isGM) return;                             // só o Mestre cria a mensagem (o id fica no mundo)
-    const nova = await chamar("POST", montarUrl(base, "", { wait: "true" }), corpo);
+    if (!game.user.isGM) return;
+    const nova = await chamar("POST", urlTopico("", { wait: "true" }, topico), { ...conteudo, username: "Foundry" });
     if (nova?.id) await game.settings.set(ID, "sinalMensagemId", nova.id);
   }).catch(err => avisarFalha(err));
 }
@@ -440,10 +481,10 @@ function ligarSinal() {
 // Ao fechar a aba: tenta avisar "offline" (se não der, o Curador percebe sozinho em poucos minutos)
 function aoFecharAba() {
   if (!souEmissor() || !temSinal()) return;
-  const id = cfg("sinalMensagemId");
-  if (!id) return;
+  const id = cfg("sinalMensagemId"), topico = cfg("topicoId");
+  if (!id || !topico) return;
   try {
-    fetch(montarUrl(urlSinal(), `/messages/${id}`), {
+    fetch(urlTopico(`/messages/${id}`, {}, topico), {
       method: "PATCH", keepalive: true, headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: textoDoSinal(dadosDoSinal("offline")), allowed_mentions: { parse: [] } })
     }).catch(() => {});
@@ -456,7 +497,7 @@ function avisarFalha(err) {
   if (Date.now() - ultimoAvisoFalha < 10 * 60_000) return;
   ultimoAvisoFalha = Date.now();
   const s = err?.status;
-  const dica = s === 401 || s === 404 ? "o link foi apagado no Discord. Gere um código novo com /foundry conectar."
+  const dica = s === 401 || s === 404 ? "o link foi apagado no Discord. Gere um código novo com /foundry no Discord."
     : s === 400 ? "o Discord recusou uma mensagem (veja o console, F12)." : "veja o console (F12).";
   ui.notifications?.warn(`Nauren no Discord: falha ao enviar — ${dica}`);
 }
@@ -481,12 +522,12 @@ class ConfigDiscord extends ApplicationV2 {
     const ok = v => (v ? `<span style="color:#2ecc71">✔ configurado</span>` : `<span style="color:#e67e22">não configurado</span>`);
     const div = document.createElement("div");
     div.innerHTML = `
-      <p>Cole aqui o <b>código de conexão</b> que O Curador mandou quando você usou <code>/foundry conectar</code> no Discord.
-      Ele fica salvo <b>neste mundo</b>: vale para qualquer Mestre, em qualquer computador, e só precisa ser colado uma vez.</p>
+      <p>Cole aqui o <b>código</b> que O Curador mandou quando você usou <code>/foundry</code> no Discord (é o mesmo código para todos os mundos).
+      Ele fica salvo <b>neste mundo</b>: vale para qualquer Mestre, em qualquer computador, e só precisa ser colado uma vez. O mundo cria sozinho o seu tópico no fórum da staff.</p>
       <div class="form-group stacked">
         <label>Código de conexão</label>
         <input type="password" name="codigo" placeholder="NDC1.…" autocomplete="off">
-        <p class="hint">Chat: ${ok(temChat())} · Sinal: ${ok(temSinal())}. Deixe em branco para manter o código atual.</p>
+        <p class="hint">${ok(temWebhook())}. Deixe em branco para manter o código atual.</p>
       </div>
       <fieldset>
         <legend>Neste mundo</legend>
@@ -509,7 +550,6 @@ class ConfigDiscord extends ApplicationV2 {
     const d = formData.object;
     try {
       if (String(d.codigo ?? "").trim()) await salvarLinks(lerCodigo(d.codigo));
-      else if (links().chat || links().sinal) await salvarLinks(links()); // passa o código da 1.0.0 (navegador) para o mundo
       for (const k of ["chat", "ooc", "mostrarCena"]) await game.settings.set(ID, k, !!d[k]);
       ui.notifications.info("Nauren no Discord: configuração salva.");
       ligarSinal();
@@ -517,26 +557,17 @@ class ConfigDiscord extends ApplicationV2 {
   }
 
   static async #testar() {
-    if (!temChat() && !temSinal()) return ui.notifications.warn("Salve o código de conexão primeiro.");
+    if (!temWebhook()) return ui.notifications.warn("Salve o código primeiro.");
     try {
-      if (temChat()) await filaChat.add(() => chamar("POST", montarUrl(urlChat(), "", { wait: "true" }), {
+      await fila.add(() => noTopico("POST", "", {
         username: "Foundry", allowed_mentions: { parse: [] },
-        embeds: [{ color: 0x2ecc71, title: "✅ Foundry conectado", description: `O chat de **${cortar(game.world.title, 200)}** vai aparecer aqui.` }]
-      }));
-      if (temSinal()) {
-        const id = cfg("sinalMensagemId");
-        const base = urlSinal();
-        const corpo = { content: textoDoSinal(dadosDoSinal("online")), allowed_mentions: { parse: [] }, username: "Foundry — Sinal" };
-        await filaSinal.add(async () => {
-          if (id) { try { return await chamar("PATCH", montarUrl(base, `/messages/${id}`), { content: corpo.content }); } catch (err) { if (err.status !== 404) throw err; } }
-          const nova = await chamar("POST", montarUrl(base, "", { wait: "true" }), corpo);
-          if (nova?.id) await game.settings.set(ID, "sinalMensagemId", nova.id);
-        });
-      }
-      ui.notifications.info("Nauren no Discord: teste enviado. Confira o Discord.");
+        embeds: [{ color: 0x2ecc71, title: "✅ Foundry conectado", description: `O chat de **${cortar(game.world.title, 200)}** vai aparecer neste tópico.` }]
+      }, { wait: "true" }));
+      await enviarSinal("online");
+      ui.notifications.info("Nauren no Discord: teste enviado. Confira o tópico do mundo no fórum.");
     } catch (err) {
       console.warn("Nauren no Discord |", err);
-      ui.notifications.error(`O teste falhou: ${err.status === 401 || err.status === 404 ? "o link não existe mais no Discord." : err.message}`);
+      ui.notifications.error(`O teste falhou: ${err.status === 401 || err.status === 404 ? "o código não vale mais. Gere outro com /foundry no Discord." : err.message}`);
     }
   }
 
@@ -558,9 +589,10 @@ Hooks.once("init", () => {
   game.settings.register(ID, "ooc", { scope: "world", config: false, type: Boolean, default: true });
   game.settings.register(ID, "mostrarCena", { scope: "world", config: false, type: Boolean, default: true });
   game.settings.register(ID, "sinalMensagemId", { scope: "world", config: false, type: String, default: "" });
+  game.settings.register(ID, "topicoId", { scope: "world", config: false, type: String, default: "" });
   game.settings.registerMenu(ID, "config", {
     name: "Nauren no Discord", label: "Configurar", icon: "fab fa-discord",
-    hint: "Cole o código de conexão do Curador. Só o Mestre vê esta opção.",
+    hint: "Cole o código que O Curador gera com /foundry. Só o Mestre vê esta opção.",
     type: ConfigDiscord, restricted: true
   });
 });
