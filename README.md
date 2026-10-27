@@ -18,5 +18,6 @@ Depois, em cada mundo: ative o módulo, abra Configurações → Configurar opç
 
 ## Publicar uma versão nova
 1. Mude `version` (e o número no fim de `download`) no `module.json`.
-2. Faça o commit e crie a tag com o mesmo número: `git tag v1.2.0 && git push origin main --tags`.
-3. A Action monta o zip e publica a release; o Foundry passa a oferecer a atualização.
+2. Faça o commit no `main`.
+3. No GitHub, **Releases → Draft a new release**, crie a tag com o mesmo número (por exemplo `v1.2.0`) e publique.
+4. A Action anexa o zip e o `module.json` à release; o Foundry passa a oferecer a atualização.
