@@ -1,5 +1,5 @@
 // ============================================================
-// Nauren no Discord 1.1.0
+// Nauren no Discord 1.2.0
 // • Chat em tempo real: cada mensagem ou cartão do Foundry vira UMA
 //   mensagem no Discord, com o nome e o retrato de quem falou. Dos
 //   cartões da Nauren vai só o que importa (dados, dano, cura, alvos,
@@ -10,7 +10,7 @@
 // o de um jogador). O código é colado uma vez por mundo e fica salvo nele.
 // ============================================================
 const ID = "nauren-discord";
-const VERSAO = "1.1.0";
+const VERSAO = "1.2.0";
 const INTERVALO_SINAL = 120_000;
 const ESPACO_ENVIO = 450;          // o Discord aceita ~5 mensagens a cada 2 s por webhook
 const APAGAR_ATE = 15 * 60_000;    // apagar no Discord só mensagens recentes (não espelha "limpar o chat")
@@ -326,7 +326,32 @@ function postar(msg, corpo) {
   promessa.catch(err => avisarFalha(err));
 }
 
+// Rolagem de atributos no Criador (Nauren 0.94.19+): a prova vai ao canal do sinal,
+// onde O Curador guarda e depois confere com a ficha exportada. Vai mesmo se o
+// card for sussurro ou se o chat estiver desligado.
+function enviarProvaDeRolagem(msg) {
+  const reg = msg.getFlag?.("nauren", "registroRolagem");
+  if (!reg?.entradaId || !souEmissor() || !temSinal()) return;
+  const ator = (reg.actorUuid && globalThis.fromUuidSync?.(reg.actorUuid)?.name) || msg.alias || "";
+  const autor = msg.author ?? msg.user;
+  const dados = {
+    t: "nauren-rolagem", v: 1,
+    mundo: { id: game.world.id, titulo: game.world.title },
+    ator: cortar(ator, 100), autor: cortar(autor?.name ?? "", 100), autorEhMestre: !!autor?.isGM,
+    mensagemId: msg.id, quando: new Date(msg.timestamp || Date.now()).toISOString(),
+    registro: {
+      entradaId: String(reg.entradaId), actorUuid: reg.actorUuid ?? "", n: reg.n ?? null, tipo: reg.tipo ?? "",
+      formula: reg.formula ?? (Array.isArray(reg.resultados) ? `${reg.resultados.length}d6` : ""),
+      resultados: Array.isArray(reg.resultados) ? reg.resultados : [], total: reg.total ?? null, testemunha: reg.testemunha ?? ""
+    }
+  };
+  const corpo = { username: "Foundry — Sinal", allowed_mentions: { parse: [] },
+    content: `🎲 Rolagem registrada — lida pelo Curador, não apague.\n\`\`\`json\n${JSON.stringify(dados)}\n\`\`\`` };
+  filaSinal.add(() => chamar("POST", montarUrl(urlSinal(), "", { wait: "true" }), corpo)).catch(err => avisarFalha(err));
+}
+
 function aoCriar(msg) {
+  try { enviarProvaDeRolagem(msg); } catch (err) { console.warn("Nauren no Discord |", err); }
   if (!souEmissor() || !temChat() || !deveIr(msg)) return;
   if (msg.getFlag?.("nauren", "resumo")?.aguardando) { pendentes.add(msg.id); return; }
   const corpo = montarCorpo(msg);
